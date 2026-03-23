@@ -67,6 +67,10 @@ const (
 func main() {
 	fmt.Printf("%s", banner)
 	cmd := NewPicoclawCommand()
+	// No subcommand or flags → same as `picoclaw gateway`
+	if len(os.Args) == 1 {
+		cmd.SetArgs([]string{"gateway"})
+	}
 	if err := cmd.Execute(); err != nil {
 		os.Exit(1)
 	}
