@@ -2,7 +2,6 @@ package matrix
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"html"
 	"io"
@@ -18,12 +17,9 @@ import (
 	"github.com/gomarkdown/markdown"
 	mdhtml "github.com/gomarkdown/markdown/html"
 	"github.com/gomarkdown/markdown/parser"
-	"go.mau.fi/util/dbutil"
 	"maunium.net/go/mautrix"
-	"maunium.net/go/mautrix/crypto/cryptohelper"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
-	_ "modernc.org/sqlite"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/channels"
@@ -34,9 +30,6 @@ import (
 )
 
 const (
-	sqliteDriver = "sqlite"
-	dbName       = "store.db"
-
 	typingRefreshInterval      = 20 * time.Second
 	typingServerTTL            = 30 * time.Second
 	roomKindCacheTTL           = 5 * time.Minute
@@ -189,7 +182,7 @@ type MatrixChannel struct {
 	roomKindCache     *roomKindCache
 	localpartMentionR *regexp.Regexp
 
-	cryptoHelper *cryptohelper.CryptoHelper
+	cryptoCloser interface{ Close() }
 	cryptoDbPath string
 }
 
@@ -256,7 +249,7 @@ func (c *MatrixChannel) Start(ctx context.Context) error {
 
 	// Initialize crypto helper if database and passphrase are configured
 	if c.cryptoDbPath != "" && c.config.CryptoPassphrase != "" {
-		if err := c.initCrypto(ctx); err != nil {
+		if err := c.maybeInitCrypto(ctx); err != nil {
 			logger.WarnCF(
 				"matrix",
 				"Failed to initialize crypto, continuing without encryption support",
@@ -295,82 +288,18 @@ func (c *MatrixChannel) Stop(ctx context.Context) error {
 	}
 	c.stopTypingSessions(ctx)
 
-	// Close crypto helper if initialized
-	if c.cryptoHelper != nil {
-		c.cryptoHelper.Close()
-		c.cryptoHelper = nil
-		c.client.Crypto = nil
-	}
+	c.closeCrypto()
 
 	logger.InfoC("matrix", "Matrix channel stopped")
 	return nil
 }
 
-func (c *MatrixChannel) initCrypto(ctx context.Context) error {
-	logger.InfoC("matrix", "Initializing crypto helper")
-
-	// Ensure the crypto database directory exists
-	if err := os.MkdirAll(c.cryptoDbPath, 0o700); err != nil {
-		return fmt.Errorf("create crypto database directory: %w", err)
+func (c *MatrixChannel) closeCrypto() {
+	if c.cryptoCloser != nil {
+		c.cryptoCloser.Close()
+		c.cryptoCloser = nil
 	}
-
-	// Create database with sqlite driver (modernc.org/sqlite)
-	dbPath := filepath.Join(c.cryptoDbPath, dbName)
-	connStr := "file:" + dbPath + "?_foreign_keys=on"
-
-	db, err := sql.Open(sqliteDriver, connStr)
-	if err != nil {
-		return fmt.Errorf("open crypto database: %w", err)
-	}
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-
-	// Execute PRAGMA statements
-	// This is equivalent to the "sqlite3-fk-wal" dialect used by cryptohelper
-	pragmaStmts := []string{
-		"PRAGMA foreign_keys = ON",
-		"PRAGMA journal_mode = WAL",
-		"PRAGMA synchronous = NORMAL",
-		"PRAGMA busy_timeout = 5000",
-	}
-	for _, pragma := range pragmaStmts {
-		if _, err = db.ExecContext(ctx, pragma); err != nil {
-			_ = db.Close()
-			return fmt.Errorf("execute %s: %w", pragma, err)
-		}
-	}
-
-	// Wrap with dbutil for dialect support
-	wrappedDB, err := dbutil.NewWithDB(db, sqliteDriver)
-	if err != nil {
-		_ = db.Close()
-		return fmt.Errorf("wrap database: %w", err)
-	}
-
-	cryptoHelper, err := cryptohelper.NewCryptoHelper(c.client, []byte(c.config.CryptoPassphrase), wrappedDB)
-	if err != nil {
-		return fmt.Errorf("create crypto helper: %w", err)
-	}
-
-	if c.client.DeviceID == "" {
-		resp, whoamiErr := c.client.Whoami(ctx)
-		if whoamiErr != nil {
-			_ = db.Close()
-			return fmt.Errorf("get device ID via whoami: %w", whoamiErr)
-		}
-		c.client.DeviceID = resp.DeviceID
-	}
-
-	if err = cryptoHelper.Init(ctx); err != nil {
-		cryptoHelper.Close()
-		return fmt.Errorf("init crypto helper: %w", err)
-	}
-
-	c.client.Crypto = cryptoHelper
-	c.cryptoHelper = cryptoHelper
-
-	logger.InfoC("matrix", "Crypto helper initialized successfully")
-	return nil
+	c.client.Crypto = nil
 }
 
 func markdownToHTML(md string) string {

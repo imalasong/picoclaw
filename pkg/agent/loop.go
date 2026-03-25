@@ -1931,7 +1931,9 @@ turnLoop:
 		var err error
 		maxRetries := 2
 		for retry := 0; retry <= maxRetries; retry++ {
+			fmt.Printf("call ai:%v\n", callMessages)
 			response, err = callLLM(callMessages, providerToolDefs)
+			fmt.Printf("ai response:%v\n", response)
 			if err == nil {
 				break
 			}
