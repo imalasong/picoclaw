@@ -105,6 +105,22 @@ function buildSavePayload(
     payload[key] = value
   }
 
+  // When GET config omits secret fields (redacted), editConfig may only have `_secret`
+  // keys; the loop above skips `_` keys and never sees a public `app_secret` etc., so
+  // merge those edit-buffer values here. Only touch secrets that appear in edit state
+  // so we do not inject unrelated empty secret keys for every channel type.
+  for (const [secretKey, editKey] of Object.entries(SECRET_FIELD_MAP)) {
+    if (Object.prototype.hasOwnProperty.call(payload, secretKey)) {
+      continue
+    }
+    if (!(editKey in editConfig) && !(secretKey in editConfig)) {
+      continue
+    }
+    const incoming = asString(editConfig[editKey])
+    const stored = asString(editConfig[secretKey])
+    payload[secretKey] = incoming !== "" ? incoming : stored
+  }
+
   if (channel.name === "whatsapp_native") {
     payload.use_native = true
   }
